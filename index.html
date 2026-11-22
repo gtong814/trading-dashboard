@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MA Slope 趨勢斜率監控儀表板</title>
+  <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+  <style>
+    body { margin: 0; background: #0f172a; color: #e2e8f0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    header { padding: 12px 20px; border-bottom: 1px solid #1e293b; display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
+    select { background: #1e293b; color: #f8fafc; border: 1px solid #334155; padding: 6px 12px; border-radius: 6px; font-size: 14px; }
+    #price-chart { width: 100%; height: 55vh; }
+    #slope-chart { width: 100%; height: 35vh; border-top: 1px solid #1e293b; }
+    .legend { font-size: 13px; color: #94a3b8; }
+  </style>
+</head>
+<body>
+  <header>
+    <strong>📊 趨勢與 MA Slope 斜率監控台</strong>
+    <select id="symbol">
+      <option value="BTCUSDT">BTC / USDT (1小時線)</option>
+      <option value="ETHUSDT">ETH / USDT (1小時線)</option>
+      <option value="SOLUSDT">SOL / USDT (1小時線)</option>
+    </select>
+    <span class="legend">上圖：K線 + EMA 29 ｜ 下圖：MA Slope (ATR標準化，黃線為 ±0.6 突破軌)</span>
+  </header>
+  <div id="price-chart"></div>
+  <div id="slope-chart"></div>
+
+  <script>
+    const chartOpts = {
+      layout: { background: { color: '#0f172a' }, textColor: '#94a3b8' },
+      grid: { vertLines: { color: '#1e293b' }, horzLines: { color: '#1e293b' } },
+      timeScale: { timeVisible: true, secondsVisible: false }
+    };
+    const priceChart = LightweightCharts.createChart(document.getElementById('price-chart'), chartOpts);
+    const slopeChart = LightweightCharts.createChart(document.getElementById('slope-chart'), chartOpts);
+
+    const candleSeries = priceChart.addCandlestickSeries({
+      upColor: '#22c55e', downColor: '#ef4444', borderVisible: false, wickUpColor: '#22c55e', wickDownColor: '#ef4444'
+    });
+    const emaSeries = priceChart.addLineSeries({ color: '#38bdf8', lineWidth: 2, title: 'EMA 29' });
+    const slopeSeries = slopeChart.addLineSeries({ color: '#f43f5e', lineWidth: 2, title: 'MA Slope' });
+
+    // 繪製 +0.6 / 0.0 / -0.6 三條區域線
+    [0.6, 0, -0.6].forEach((val, idx) => {
+      slopeSeries.createPriceLine({
+        price: val,
+        color: idx === 1 ? '#64748b' : '#eab308',
+        lineWidth: 1,
+        lineStyle: idx === 1 ? 2 : 0,
+        title: idx === 1 ? '0 軸' : (val > 0 ? '+0.6 多頭軌' : '-0.6 空頭軌')
+      });
+    });
+
+    function calcEMA(data, period) {
+      const k = 2 / (period + 1);
+      let ema = data[0].close;
+      return data.map(d => { ema = d.close * k + ema * (1 - k); return { time: d.time, value: ema }; });
+    }
+
+    function calcATR(data, period = 7) {
+      const trs = data.map((d, i) => i === 0 ? d.high - d.low : Math.max(d.high - d.low, Math.abs(d.high - data[i-1].close), Math.abs(d.low - data[i-1].close)));
+      let atr = trs.slice(0, period).reduce((a, b) => a + b, 0) / period;
+      return trs.map((tr, i) => { if (i >= period) atr = (atr * (period - 1) + tr) / period; return atr; });
+    }
+
+    async function loadData(symbol) {
+      const res = await fetch(`https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=1h&limit=300`);
+      const raw = await res.json();
+      const candles = raw.map(k => ({ time: k[0] / 1000, open: +k[1], high: +k[2], low: +k[3], close: +k[4] }));
+      const ema29 = calcEMA(candles, 29);
+      const atr7 = calcATR(candles, 7);
+      const lookback = 9;
+      const slopeData = ema29.slice(lookback).map((e, i) => ({
+        time: e.time,
+        value: (e.value - ema29[i].value) / atr7[i + lookback]
+      }));
+
+      candleSeries.setData(candles);
+      emaSeries.setData(ema29);
+      slopeSeries.setData(slopeData);
+    }
+
+    // 讓上下兩個圖表的時間軸縮放同步
+    priceChart.timeScale().subscribeVisibleLogicalRangeChange(range => slopeChart.timeScale().setVisibleLogicalRange(range));
+    slopeChart.timeScale().subscribeVisibleLogicalRangeChange(range => priceChart.timeScale().setVisibleLogicalRange(range));
+
+    document.getElementById('symbol').addEventListener('change', e => loadData(e.target.value));
+    loadData('BTCUSDT');
+  </script>
+</body>
+</html>
